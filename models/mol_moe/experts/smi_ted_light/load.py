@@ -402,6 +402,7 @@ class Smi_ted(nn.Module):
         self.padding_idx = tokenizer.get_padding_idx()
         self.n_vocab = len(self.tokenizer.vocab)
         self.is_cuda_available = torch.cuda.is_available()
+        self._device = None  # Track device for consistent device handling
 
         # instantiate modules
         if self.config:
@@ -417,7 +418,23 @@ class Smi_ted(nn.Module):
         elif isinstance(module, nn.LayerNorm):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
-        
+
+    @property
+    def device(self):
+        """Get current device of the model."""
+        if self._device is None:
+            try:
+                self._device = next(self.parameters()).device
+            except StopIteration:
+                self._device = torch.device('cpu')
+        return self._device
+
+    def to(self, device):
+        """Override to() to track device changes."""
+        super().to(device)
+        self._device = torch.device(device) if isinstance(device, str) else device
+        return self
+
     def load_checkpoint(self, ckpt_path):
         # load checkpoint file
         checkpoint = torch.load(ckpt_path, map_location=torch.device('cpu'), weights_only=False)
@@ -490,10 +507,8 @@ class Smi_ted(nn.Module):
         idx = tokens['input_ids'].clone().detach()
         mask = tokens['attention_mask'].clone().detach()
 
-        if self.is_cuda_available:
-            return idx.cuda(), mask.cuda()
-        
-        return idx, mask
+        # Fix: Use device property instead of hardcoded .cuda()
+        return idx.to(self.device), mask.to(self.device)
     
     def extract_all(self, smiles):
         """Extract all elements from each part of smi-ted. Be careful."""
@@ -621,7 +636,8 @@ class Smi_ted(nn.Module):
         flat_list = [item for sublist in embeddings for item in sublist]
 
         # clear GPU memory
-        if self.is_cuda_available:
+        # Fix: Check device type instead of is_cuda_available
+        if self.device.type == 'cuda':
             torch.cuda.empty_cache()
             gc.collect()
 

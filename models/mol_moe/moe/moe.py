@@ -8,14 +8,29 @@
 # https://github.com/tensorflow/tensor2tensor/blob/master/tensor2tensor/utils/expert_utils.py
 
 
+import sys
+from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions.normal import Normal
-from models import MLP, Expert
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+
+# Add local directory to path FIRST (for models.py import)
+_local_path = Path(__file__).parent
+if str(_local_path) not in sys.path:
+    sys.path.insert(0, str(_local_path))
+
+# Add utils path for device management utilities
+_utils_path = Path(__file__).parent.parent / 'utils'
+if str(_utils_path) not in sys.path:
+    sys.path.insert(0, str(_utils_path))
+
+# Now import from local models.py and utils/device.py
+from models import MLP, Expert
+from device import get_model_device, to_device, ensure_device
 
 
 class SparseDispatcher(object):
@@ -55,6 +70,7 @@ class SparseDispatcher(object):
         self.verbose = verbose
         self._gates = gates
         self._num_experts = num_experts
+        self._device = gates.device  # Store device for later use
         # sort experts
         sorted_experts, index_sorted_experts = torch.nonzero(gates).sort(0)
         # drop indices
@@ -89,7 +105,11 @@ class SparseDispatcher(object):
         # return torch.split(inp_exp, self._part_sizes, dim=0)
 
         inp = pd.Series(inp)
-        inp_exp = inp.iloc[self._batch_index]
+        # Fix: Convert CUDA tensor indices to CPU numpy for pandas iloc
+        batch_indices = self._batch_index
+        if isinstance(batch_indices, torch.Tensor):
+            batch_indices = batch_indices.cpu().numpy()
+        inp_exp = inp.iloc[batch_indices]
         _part_indexes = [sum(self._part_sizes[:i]) for i in range(1, len(self._part_sizes))]
         return [list(x) for x in np.split(inp_exp.to_numpy(), _part_indexes, axis=0)]
 
@@ -114,7 +134,9 @@ class SparseDispatcher(object):
             stitched = stitched.mul(self._nonzero_gates)
         zeros = torch.zeros(self._gates.size(0), expert_out[-1].size(1), requires_grad=True, device=stitched.device)
         # combine samples that have been processed by the same k experts
-        combined = zeros.index_add(0, self._batch_index, stitched.float())
+        # Fix: Ensure _batch_index is on same device as stitched
+        batch_index = ensure_device(self._batch_index, stitched.device)
+        combined = zeros.index_add(0, batch_index, stitched.float())
         return combined
 
     def expert_to_gates(self):
@@ -163,6 +185,20 @@ class MoE(nn.Module):
 
         self.embd_net = self.EmbeddingNet(tokenizer=tokenizer, tok_emb=tok_emb, n_embd=input_size)
         self.embd_net.apply(self.embd_net._init_weights)
+        self._device = None
+
+    def to(self, device):
+        """Override to() to set target device on all experts."""
+        device = torch.device(device) if isinstance(device, str) else device
+        self._device = device
+        # Set target device on all experts
+        for expert in self.experts:
+            expert.set_device(device)
+        # Also move the underlying expert models to device
+        for model in self.models:
+            if hasattr(model, 'to'):
+                model.to(device)
+        return super().to(device)
 
     class EmbeddingNet(nn.Module):
         def __init__(self, tokenizer, tok_emb, n_embd=768):
@@ -188,6 +224,11 @@ class MoE(nn.Module):
             tokens = self.tokenizer(smiles, padding=True, truncation =True, add_special_tokens=True,return_tensors="pt", max_length=512)
             idx = tokens['input_ids'].clone().detach()
             mask = tokens['attention_mask'].clone().detach()
+
+            # Fix: Move tokenizer outputs to same device as model
+            device = get_model_device(self.tok_emb)
+            idx = idx.to(device)
+            mask = mask.to(device)
 
             token_embeddings = self.tok_emb(idx) # each index maps to a (learnable) vector
             
@@ -321,11 +362,33 @@ class MoE(nn.Module):
         return y, loss
 
 
-def train(train_loader, model, net, loss_fn, optim, epochs):
+def train(train_loader, model, net, loss_fn, optim, epochs, device=None):
+    """
+    Train the MoE model.
+
+    Args:
+        train_loader: DataLoader with (SMILES, target) batches
+        model: MoE model
+        net: Predictor network
+        loss_fn: Loss function (MSELoss for regression, CrossEntropyLoss for classification)
+        optim: Optimizer
+        epochs: Number of training epochs
+        device: Target device (auto-detected if None)
+
+    Returns:
+        Trained model and net
+    """
+    # Auto-detect device if not specified
+    if device is None:
+        device = get_model_device(model)
+
     model.train()
     net.train()
     for epoch in range(epochs):
         for (x, y) in tqdm(train_loader):
+            # Fix: Move y to device (CRITICAL)
+            y = y.to(device)
+
             optim.zero_grad()
             # model returns the prediction and the loss that encourages all experts to have equal importance and load
             embd, aux_loss = model(x)
