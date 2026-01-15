@@ -534,9 +534,11 @@ def main():
         logger.info(f"R²:   {xgb_r2:.4f}")
         logger.info("="*60)
 
-        # Save XGBoost model
-        xgb_model_path = output_dir / f'xgboost_{model_name}_model.json'
-        xgb_model.save_model(str(xgb_model_path))
+        # Save XGBoost model using pickle (more reliable for sklearn wrapper)
+        import pickle
+        xgb_model_path = output_dir / f'xgboost_{model_name}_model.pkl'
+        with open(xgb_model_path, 'wb') as f:
+            pickle.dump(xgb_model, f)
         logger.info(f"XGBoost model saved to: {xgb_model_path}")
 
     logger.info("="*60)

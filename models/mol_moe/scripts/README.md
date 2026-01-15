@@ -150,7 +150,7 @@ cat smiles.txt | uv run --no-build-isolation inference.py \
 ```bash
 uv run --no-build-isolation inference.py \
     --checkpoint checkpoints/best_model.pt \
-    --xgboost checkpoints/xgboost_model.json \
+    --xgboost checkpoints/xgboost_model.pkl \
     --input data.csv
 ```
 
@@ -185,7 +185,7 @@ python -c "import torch; print(torch.cuda.is_available())"
 
 After training, you'll find in `checkpoints/`:
 - `best_<model_name>_moe_model.pt` - Best MoE+Net checkpoint
-- `xgboost_<model_name>_model.json` - XGBoost model (if `--train-xgboost`)
+- `xgboost_<model_name>_model.pkl` - XGBoost model (if `--train-xgboost`)
 - `results_<model_name>.csv` - Performance metrics
 - `train_<model_name>_<timestamp>.log` - Training log
 

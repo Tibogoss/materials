@@ -227,11 +227,11 @@ def load_models(checkpoint_path: Path, device, logger):
 
 
 def load_xgboost_model(xgboost_path: Path, logger):
-    """Load XGBoost model."""
-    from xgboost import XGBRegressor
+    """Load XGBoost model from pickle file."""
+    import pickle
     logger.info(f"Loading XGBoost model: {xgboost_path}")
-    xgb_model = XGBRegressor()
-    xgb_model.load_model(str(xgboost_path))
+    with open(xgboost_path, 'rb') as f:
+        xgb_model = pickle.load(f)
     return xgb_model
 
 
