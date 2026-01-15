@@ -342,6 +342,7 @@ def main():
     # Get input SMILES
     smiles_list = []
     ids = []
+    input_df = None  # Store original dataframe to preserve all columns
 
     if args.smiles:
         # From command line
@@ -367,16 +368,16 @@ def main():
             sys.exit(1)
 
         logger.info(f"Reading from: {input_path}")
-        df = pd.read_csv(input_path)
+        input_df = pd.read_csv(input_path)
 
-        if args.smiles_column not in df.columns:
-            logger.error(f"SMILES column '{args.smiles_column}' not found. Available: {list(df.columns)}")
+        if args.smiles_column not in input_df.columns:
+            logger.error(f"SMILES column '{args.smiles_column}' not found. Available: {list(input_df.columns)}")
             sys.exit(1)
 
-        smiles_list = df[args.smiles_column].tolist()
+        smiles_list = input_df[args.smiles_column].tolist()
 
-        if args.id_column and args.id_column in df.columns:
-            ids = df[args.id_column].tolist()
+        if args.id_column and args.id_column in input_df.columns:
+            ids = input_df[args.id_column].tolist()
         else:
             ids = [f"mol_{i}" for i in range(len(smiles_list))]
 
@@ -392,19 +393,29 @@ def main():
     )
 
     # Prepare output
-    results = []
-    for i, (smi, pred, mol_id) in enumerate(zip(smiles_list, predictions, ids)):
-        results.append({
-            'id': mol_id,
-            'smiles': smi,
-            'prediction': pred
-        })
+    if input_df is not None:
+        # CSV input: preserve all original columns and add prediction
+        output_df = input_df.copy()
+        output_df['prediction'] = predictions
+        results = output_df.to_dict('records')
+    else:
+        # Command line or stdin: create simple output
+        results = []
+        for i, (smi, pred, mol_id) in enumerate(zip(smiles_list, predictions, ids)):
+            results.append({
+                'id': mol_id,
+                'smiles': smi,
+                'prediction': pred
+            })
 
     # Count valid predictions
-    valid_count = sum(1 for r in results if r['prediction'] is not None)
-    logger.info(f"Predictions completed: {valid_count}/{len(results)} valid")
+    valid_count = sum(1 for pred in predictions if pred is not None)
+    logger.info(f"Predictions completed: {valid_count}/{len(predictions)} valid")
 
     # Output results
+    # Use dataframe directly if available, otherwise create from results
+    df_out = output_df if input_df is not None else pd.DataFrame(results)
+
     if args.output:
         output_path = Path(args.output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -413,10 +424,8 @@ def main():
             with open(output_path, 'w') as f:
                 json.dump(results, f, indent=2)
         elif args.format == "tsv":
-            df_out = pd.DataFrame(results)
             df_out.to_csv(output_path, sep='\t', index=False)
         else:  # csv
-            df_out = pd.DataFrame(results)
             df_out.to_csv(output_path, index=False)
 
         logger.info(f"Results saved to: {output_path}")
@@ -426,17 +435,9 @@ def main():
         if args.format == "json":
             print(json.dumps(results, indent=2))
         elif args.format == "tsv":
-            print("id\tsmiles\tprediction")
-            for r in results:
-                pred = r['prediction'] if r['prediction'] is not None else "NA"
-                print(f"{r['id']}\t{r['smiles']}\t{pred}")
+            df_out.to_csv(sys.stdout, sep='\t', index=False)
         else:  # csv
-            print("id,smiles,prediction")
-            for r in results:
-                pred = r['prediction'] if r['prediction'] is not None else "NA"
-                # Escape SMILES for CSV
-                smi = f'"{r["smiles"]}"' if ',' in r['smiles'] else r['smiles']
-                print(f"{r['id']},{smi},{pred}")
+            df_out.to_csv(sys.stdout, index=False)
 
     logger.info("Inference completed successfully")
     return 0
